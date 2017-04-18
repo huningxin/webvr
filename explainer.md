@@ -151,7 +151,7 @@ function OnSessionStarted(session) {
 
 ### Main render loop
 
-WebVR provides tracking information via the [`VRSession.getDevicePose`](https://w3c.github.io/webvr/#dom-vrsession-getdevicepose) method, which developers can poll each frame to get the view and projection matrices for each eye. The matrices provided by the [`VRDevicePose`](https://w3c.github.io/webvr/#interface-vrdevicepose) can be used to render the appropriate viewpoint of the scene for both eyes.
+WebVR provides tracking information via the [`VRSession.getDevicePose`](https://w3c.github.io/webvr/#dom-vrsession-getdevicepose) method, which developers can poll each frame to get the pose matrix (which indicates how the device is positioned and oriented) and matrices for each view described by the `VRLayer`. The matrices provided by the [`VRDevicePose`](https://w3c.github.io/webvr/#interface-vrdevicepose) can be used to render the appropriate viewpoint of the scene in stereo.
 
 In order to poll the pose, developers must indicate what frame of reference should be used, which determines what the returned pose is relative to. This is supplied as a `VRFrameOfReference` object, which can be created once a `VRSession` has been acquired. The most common type is an "eyeLevel" frame of referencem which indicates that the headsets orientation and position are reported relative to the first sensor readings received from the device (or the last time the user manually reset the orientation.)
 
@@ -184,13 +184,11 @@ function OnDrawFrame() {
       // Draw each view of the scene to the prescribed viewport. Typically if we
       // have exclusive access to the device this will draw in stereo, otherwise
       // it will usually draw in mono.
-      for (let i in pose.views) {
-        let view = pose.views[i];
-        let viewport = vrLayer.viewports[i];
-
-        gl.bindFramebuffer(viewport.framebuffer);
-        gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-        drawScene(view.projectionMatrix, view.viewMatrix, view.eye);
+      for (let view of vrLayer.views) {
+        gl.bindFramebuffer(view.framebuffer);
+        gl.viewport(view.viewportX, view.viewportY,
+                    view.viewportWidth, view.viewportHeight);
+        drawScene(view.projectionMatrix, pose.getViewMatrix(view), view.eye);
       }
     }
 
@@ -209,6 +207,8 @@ function OnDrawFrame() {
   }
 }
 ```
+
+`drawScene()` in this case represents an application-specific method that would draw the WebGL content using the provided projection and view matrices. If the content is pre-rendered stereo content (such as top/bottom stereo video) the `view.eye` provided indicates which half of the content should be shown.
 
 ### Ending the VR session
 
@@ -505,15 +505,14 @@ enum VREye {
   "right"
 };
 
-interface VRDevicePoseView {
-  readonly attribute Float32Array projectionMatrix;
-  readonly attribute Float32Array viewMatrix;
+interface VRView {
   readonly attribute VREye eye;
+  readonly attribute Float32Array projectionMatrix;
 }
 
 interface VRDevicePose {
-  readonly attribute FrozenArray<VRDevicePoseView> views;
   readonly attribute Float32Array poseModelMatrix;
+  Float32Array getViewMatrix(VRView view);
 };
 
 //
@@ -521,17 +520,6 @@ interface VRDevicePose {
 //
 
 interface VRLayer {};
-
-interface VRWebGLLayerViewport {
-  readonly attribute long x;
-  readonly attribute long y;
-  readonly attribute long width;
-  readonly attribute long height;
-
-  readonly attribute WebGLFramebuffer framebuffer;
-  readonly attribute long framebufferWidth;
-  readonly attribute long framebufferHeight;
-};
 
 dictionary VRWebGLLayerInit {
   double framebufferScale = 0.0;
@@ -542,10 +530,20 @@ dictionary VRWebGLLayerInit {
   boolean antialias = true;
 };
 
+interface VRWebGLLayerView : VRView {
+  readonly attribute long viewportX;
+  readonly attribute long viewportY;
+  readonly attribute long viewportWidth;
+  readonly attribute long viewportHeight;
+
+  readonly attribute WebGLFramebuffer framebuffer;
+  readonly attribute long framebufferWidth;
+  readonly attribute long framebufferHeight;
+};
+
 [Constructor(VRSession session, VRWebGLLayerInit layerInitDict)]
 interface VRWebGLLayer : VRLayer {
-  attribute FrozenArray<VRWebGLLayerViewport> viewports;
-  attribute double viewportScale;
+  attribute FrozenArray<VRWebGLLayerView> views;
 
   readonly attribute double framebufferScale;
   readonly attribute boolean alpha;
