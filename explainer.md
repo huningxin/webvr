@@ -151,64 +151,66 @@ function OnSessionStarted(session) {
 
 ### Main render loop
 
-WebVR provides tracking information via the [`VRSession.getDevicePose`](https://w3c.github.io/webvr/#dom-vrsession-getdevicepose) method, which developers can poll each frame to get the pose matrix (which indicates how the device is positioned and oriented) and matrices for each view described by the `VRLayer`. The matrices provided by the [`VRDevicePose`](https://w3c.github.io/webvr/#interface-vrdevicepose) can be used to render the appropriate viewpoint of the scene in stereo.
+The UA maintains a VR compositor behind the scenes that is always active during an exclusive session. It runs a tight rendering loop, presenting the imagery defined by the session's layers to the VR device at as close to the device's native framerate as possible. To display imagery on the device a scene must be drawn into the framebuffer provided by a `VRWebGLLayer`. (Future spec iterations could enable video or image layers that would automatically be synchronized to the compositor, but WebGL layers must be updated manually.) In order to preserve the illusion of a virtual world, the view of the scene that's drawn must track the device's movement.
 
-In order to poll the pose, developers must indicate what frame of reference should be used, which determines what the returned pose is relative to. This is supplied as a `VRFrameOfReference` object, which can be created once a `VRSession` has been acquired. The most common type is an "eyeLevel" frame of referencem which indicates that the headsets orientation and position are reported relative to the first sensor readings received from the device (or the last time the user manually reset the orientation.)
+WebVR provides tracking information via a `VRFrame`, which is retrieved from the session by calling `VRSession.requestVRFrame()`. This returns a promise which resolves to a `VRFrame` when the VR compositor is ready to accept a new frame, enabling it to act as an analog for `requestAnimationFrame` that runs at the target output device's refresh rate. Once a `VRFrame` has been aquired the device position and orientation (referred to as the "pose") can be retrieved by calling `VRFrame.getDevicePose()`. This returns a `VRDevicePose`, which provides matrices that can be used to render the views of the scene required by the device.
+
+In order to query the pose, developers must indicate what frame of reference should be used, which determines what the returned pose is relative to. This is supplied as a `VRFrameOfReference` object, which can be created once a `VRSession` has been acquired. The most common type is an "eyeLevel" frame of reference which indicates that the headsets orientation and position are reported relative to the first sensor readings received from the device (or the last time the user manually reset the orientation.)
 
 ```js
 let vrFrameOfRef = null;
 
-async function OnFirstVRFrame() {
+async function OnFirstVRFrame(vrFrame) {
   // The Frame of Reference indicates what the matrices and coordinates the
   // VRDevice returns are relative to. An "eyeLevel" VRFrameOfReference reports
   // values relative to the orientation and position where the device first
   // began tracking.
   vrFrameOfRef = await vrSession.createFrameOfReference("eyeLevel");
 
-  OnDrawFrame();
+  OnDrawVRFrame(vrFrame);
 }
 ```
 
 Unless a ["headModel"](#orientation-only-tracking) Frame of Reference is being used, the session is not guaranteed to return a pose. (It may have lost tracking, for instance.) In that case the app will need to decide how to respond. It may wish to re-render the scene using an older pose, fade the scene out to prevent disorientation, fall back to a headModel Frame of Reference, or simply not update.
 
-The UA maintains a VR compositor behind the scenes that is always active during an exclusive session. It runs a tight rendering loop, presenting the imagery defined by the session's layers to the VR device at as close to the device's native framerate as possible. Potentially future spec iterations could enable video layers that would automatically be synchronized to the compositor, but images from a canvas layer are not updated automatically. To display content on the device [`VRSession.requestVRFrame`](https://w3c.github.io/webvr/#dom-vrsession-requestvrframe) must be called to retrieve a promise which resolves when the VR compositor is ready draw a new frame. This enables it to act as an analog for `requestAnimationFrame` which runs at the target output device's refresh rate. When the promise resolves the application renders it's scene into the framebuffers provided by the `VRWebGLLayer`, which is then sent to the VR compositor. The compositor will continue presenting that content to the user, reprojected, each frame until new content is provided in a future `requestVRFrame` resolve.
-
 ```js
-function OnDrawFrame() {
-  // Do we have an active session?
-  if (vrSession) {
-    let pose = vrSession.getDevicePose(vrFrameOfRef);
+function OnDrawVRFrame(vrFrame) {
+  let pose = vrFrame.getDevicePose(vrFrameOfRef);
 
-    // Only render if a new pose is available
-    if (pose) {
-      // Draw each view of the scene to the prescribed viewport. Typically if we
-      // have exclusive access to the device this will draw in stereo, otherwise
-      // it will usually draw in mono.
-      for (let view of vrLayer.views) {
-        gl.bindFramebuffer(view.framebuffer);
-        gl.viewport(view.viewportX, view.viewportY,
-                    view.viewportWidth, view.viewportHeight);
-        drawScene(view.projectionMatrix, pose.getViewMatrix(view), view.eye);
-      }
+  // Only render if a new pose is available
+  if (pose) {
+    gl.bindFramebuffer(vrLayer.framebuffer);
+
+    // Draw each view of the scene to the prescribed viewport. Typically if we
+    // have exclusive access to the device this will draw in stereo, otherwise
+    // it will usually draw in mono.
+    for (let view of vrFrame.views) {
+      let viewport = vrLayer.getViewport(view);
+      gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+      DrawScene(view.projectionMatrix, pose.getViewMatrix(view), view.eye);
     }
-
-    // `VRSession.requestVRFrame` returns a promise that resolves when the
-    // frame has been submitted and the next frame is ready to be drawn, which
-    // allows it to function as a requestAnimationFrame analog that runs at the
-    // appropriate framerate for the output device (whether that's a VRDisplay
-    // or the main monitor).
-    vrSession.requestVRFrame().then(OnDrawFrame);
-  } else {
-    // No session available, so render a default mono view.
-    gl.viewport(0, 0, glCanvas.width, glCanvas.height);
-    drawScene(defaultProjectionMatrix, defaultViewMatrix);
-
-    window.requestAnimationFrame(OnDrawFrame);
   }
+
+  // `VRSession.requestVRFrame` returns a promise that resolves when the next
+  // frame is ready to be drawn, which allows it to function as a
+  // requestAnimationFrame analog that runs at the appropriate framerate for the
+  // output device (whether that's a VRDevice or the main monitor).
+  vrSession.requestVRFrame().then(OnDrawVRFrame);
 }
 ```
 
-`drawScene()` in this case represents an application-specific method that would draw the WebGL content using the provided projection and view matrices. If the content is pre-rendered stereo content (such as top/bottom stereo video) the `view.eye` provided indicates which half of the content should be shown.
+`DrawScene()` in this case represents an application-specific method that would draw the WebGL content using the provided projection and view matrices. If the content is pre-rendered stereo content (such as top/bottom stereo video) the `view.eye` provided indicates which half of the content should be shown. Once the frame's promise `then` callbacks have completed the images rendered to the session's layers will be composited and displayed on the VR device. The VR compositor will continue presenting that content to the user, reprojected, each frame until new content is provided in a future `requestVRFrame` resolve.
+
+When a `VRSession` is not available it's typically desirable to have the page run a more traditional render loop, which can frequently reuse the same scene drawing logic.
+
+```js
+function OnDrawFrame(timestamp) {
+  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+  DrawScene(defaultProjectionMatrix, defaultViewMatrix, "left");
+
+  window.requestAnimationFrame(OnDrawFrame);
+}
+```
 
 ### Ending the VR session
 
@@ -302,7 +304,7 @@ if(frameOfRef.bounds) {
 
 ### High quality rendering
 
-In general creating a `VRWebGLLayer` will generate framebuffers at a resolution that is deemed by the UA to be a good balance between performance and quality. This may mean that it may use a resolution lower than necessary to get a 1:1 pixel ratio at the center of the users vision post-distortion, especially on mobile devices. For the majority of applications that's probably the right call, but some applications will want to ensure their output is as high quality as possible for the device. These will usually be simpler scenes with detailed textures, like a photo viewer or text-heavy experiences. To accomplish this the application can explicitly request a 1:1 pixel ratio when creating the `VRWebGLLayer`.
+In general creating a `VRWebGLLayer` will generate framebuffers at a resolution that is deemed by the UA to be a good balance between performance and quality. This may mean that it may use a resolution lower than necessary to get a 1:1 pixel ratio at the center of the users vision post-distortion, especially on mobile devices. For the majority of applications that's probably the right call, but some applications will want to ensure their output is as high quality as possible for the device. These will usually be simpler scenes with detailed textures, like a photo viewer or text-heavy experiences. To accomplish this the application can explicitly request a 1:1 pixel ratio when creating the `VRWebGLLayer` with the `framebufferScaleFactor` option.
 
 ```js
 vrDevice.requestSession({ canvas: glCanvas }).then(session => {
@@ -310,7 +312,7 @@ vrDevice.requestSession({ canvas: glCanvas }).then(session => {
   // half resolution buffer, values greater than 1.0 request a resolution that
   // will be super-sampled. Passing 0.0 or leaving to optional scale factor off
   // lets the UA decide what scale factor to use.
-  vrLayer = new VRWebGLLayer(vrSession, { framebufferScale: 1.0 });
+  vrLayer = new VRWebGLLayer(vrSession, { framebufferScaleFactor: 1.0 });
   vrSession.baseLayer = vrLayer;
 
   // Do any other necessary setup
@@ -489,16 +491,21 @@ interface VRSession : EventTarget {
   attribute EventHandler onresetpose;
 
   Promise<VRFrameOfReference> createFrameOfReference(VRFrameOfReferenceType type);
-  VRDevicePose? getDevicePose(VRCoordinateSystem coordinateSystem);
 
   Promise<void> endSession();
 
-  Promise<DOMHighResTimeStamp> requestVRFrame();
+  Promise<VRFrame> requestVRFrame();
 };
 
 //
-// Pose
+// Frame
 //
+
+interface VRFrame {
+  readonly attribute FrozenArray<VRView> views;
+
+  VRDevicePose? getDevicePose(VRCoordinateSystem coordinateSystem);
+}
 
 enum VREye {
   "left",
@@ -522,7 +529,7 @@ interface VRDevicePose {
 interface VRLayer {};
 
 dictionary VRWebGLLayerInit {
-  double framebufferScale = 0.0;
+  double framebufferScaleFactor = 0.0;
 
   boolean alpha = true;
   boolean depth = true;
@@ -530,22 +537,22 @@ dictionary VRWebGLLayerInit {
   boolean antialias = true;
 };
 
-interface VRWebGLLayerView : VRView {
-  readonly attribute long viewportX;
-  readonly attribute long viewportY;
-  readonly attribute long viewportWidth;
-  readonly attribute long viewportHeight;
-
-  readonly attribute WebGLFramebuffer framebuffer;
-  readonly attribute long framebufferWidth;
-  readonly attribute long framebufferHeight;
+interface VRWebGLViewport {
+  readonly attribute long x;
+  readonly attribute long y;
+  readonly attribute long width;
+  readonly attribute long height;
 };
 
 [Constructor(VRSession session, VRWebGLLayerInit layerInitDict)]
 interface VRWebGLLayer : VRLayer {
-  attribute FrozenArray<VRWebGLLayerView> views;
+  VRWebGLViewport getViewport(VRView view);
 
-  readonly attribute double framebufferScale;
+  readonly attribute WebGLFramebuffer framebuffer;
+  readonly attribute double framebufferScaleFactor;
+  readonly attribute long framebufferWidth;
+  readonly attribute long framebufferHeight;
+
   readonly attribute boolean alpha;
   readonly attribute boolean depth;
   readonly attribute boolean stencil;
