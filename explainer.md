@@ -106,14 +106,10 @@ The page may also want to create a session that doesn't need exclusive access to
 Requesting a new type of session will end any previously active ones.
 
 ```js
-// Initially only canvases with WebGL contexts will be supported.
-let glCanvas = document.createElement("canvas");
-let gl = glCanvas.getContext("webgl");
-
 function BeginVRSession(isExclusive) {
   // VRDevice.requestSession must be called within a user gesture event
   // like click or touch when requesting exclusive access.
-  vrDevice.requestSession({ canvas: glCanvas, exclusive: isExclusive })
+  vrDevice.requestSession({ exclusive: isExclusive })
       .then(OnSessionStarted)
       .catch(err => {
         // May fail for a variety of reasons, including another page already
@@ -127,6 +123,10 @@ function BeginVRSession(isExclusive) {
 Once the session is started some setup must be done to prepare for rendering. The content to present to the device is defined by a [`VRLayer`](https://w3c.github.io/webvr/#interface-vrlayer). In the initial version of the spec only one layer type, `VRWebGLLayer`, is defined and only one layer can be used at a time. This is set via the `VRSession.baseLayer` attribute. (`baseLayer` because future versions of the spec will likely enable multiple layers, at which point this would act like the `firstChild` attribute of a DOM element.)
 
 ```js
+// Initially only canvases with WebGL contexts will be supported.
+let glCanvas = document.createElement("canvas");
+let gl = glCanvas.getContext("webgl");
+
 let vrSession = null;
 let vrLayer = null;
 
@@ -141,7 +141,7 @@ function OnSessionStarted(session) {
 
   // The content that will be shown on the device is
   // defined by the current layer.
-  vrLayer = new VRWebGLLayer(vrSession);
+  vrLayer = new VRWebGLLayer(vrSession, glCanvas,);
   vrSession.baseLayer = vrLayer;
 
   // Start the render loop
@@ -307,12 +307,12 @@ if(frameOfRef.bounds) {
 In general creating a `VRWebGLLayer` will generate framebuffers at a resolution that is deemed by the UA to be a good balance between performance and quality. This may mean that it may use a resolution lower than necessary to get a 1:1 pixel ratio at the center of the users vision post-distortion, especially on mobile devices. For the majority of applications that's probably the right call, but some applications will want to ensure their output is as high quality as possible for the device. These will usually be simpler scenes with detailed textures, like a photo viewer or text-heavy experiences. To accomplish this the application can explicitly request a 1:1 pixel ratio when creating the `VRWebGLLayer` with the `framebufferScaleFactor` option.
 
 ```js
-vrDevice.requestSession({ canvas: glCanvas }).then(session => {
+vrDevice.requestSession().then(session => {
   // Request dimensions needed for 1:1 output pixel ratio. 0.5 would request a
   // half resolution buffer, values greater than 1.0 request a resolution that
   // will be super-sampled. Passing 0.0 or leaving to optional scale factor off
   // lets the UA decide what scale factor to use.
-  vrLayer = new VRWebGLLayer(vrSession, { framebufferScaleFactor: 1.0 });
+  vrLayer = new VRWebGLLayer(vrSession, glCanvas, { framebufferScaleFactor: 1.0 });
   vrSession.baseLayer = vrLayer;
 
   // Do any other necessary setup
@@ -330,7 +330,7 @@ Many VR devices have some way of detecting when the user has put the headset on 
 vrDevice.addEventListener('activate', vrDeviceEvent => {
   // The activate event acts as a user gesture, so exclusive access can be
   // requested in the even handler.
-  vrDevice.requestSession({ canvas: glCanvas }).then(OnSessionStarted);
+  vrDevice.requestSession().then(OnSessionStarted);
 });
 ```
 
@@ -391,7 +391,7 @@ navigator.vr.addEventListener('navigate', vrDeviceEvent => {
   vrSessionEvent.preventDefault();
   vrDevice = vrSession.device;
 
-  vrDevice.requestSession({ canvas: glCanvas }).then(OnSessionStarted);
+  vrDevice.requestSession().then(OnSessionStarted);
 });
 ```
 
@@ -464,16 +464,11 @@ interface VRDevice : EventTarget {
 // Session
 //
 
-typedef (HTMLCanvasElement or
-         OffscreenCanvas) VRCanvasSource;
-
 dictionary VRSessionCreateParametersInit {
-  VRCanvasSource canvas;
   boolean exclusive = true;
 };
 
 interface VRSessionCreateParameters {
-  readonly VRCanvasSource canvas;
   readonly boolean exclusive;
 };
 
@@ -528,6 +523,9 @@ interface VRDevicePose {
 
 interface VRLayer {};
 
+typedef (HTMLCanvasElement or
+         OffscreenCanvas) VRCanvasSource;
+
 dictionary VRWebGLLayerInit {
   double framebufferScaleFactor = 0.0;
 
@@ -544,9 +542,13 @@ interface VRWebGLViewport {
   readonly attribute long height;
 };
 
-[Constructor(VRSession session, VRWebGLLayerInit layerInitDict)]
+[Constructor(VRSession session,
+             VRCanvasSource source,
+             optional VRWebGLLayerInit layerInitDict)]
 interface VRWebGLLayer : VRLayer {
   VRWebGLViewport getViewport(VRView view);
+
+  readonly attribute VRCanvasSource source;
 
   readonly attribute WebGLFramebuffer framebuffer;
   readonly attribute double framebufferScaleFactor;
