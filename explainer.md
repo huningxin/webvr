@@ -76,7 +76,7 @@ navigator.vr.getDevices().then(devices => {
 ```
 ### Detecting and advertising VR mode
 
-If a VRDevice is available and has the appropriate capabilities the page will usually want to add some UI to trigger activation of "VR Presentation Mode", where the page can begin sending imagery to the device. Testing to see if the device supports the capabilities the page needs is done via the `supportsSession` call, which takes a dictionary of the desired functionality and returns whether or not the device can create a session supporting them. Querying for support this way is necessary because it allows the application to detect what VR features are available without actually engaging the sensors or beginning presentation, which can incur significant power or performance overhead on some systems and may have side effects such as launching a VR status tray or storefront.
+If a `VRDevice` is available and has the appropriate capabilities the page will usually want to add some UI to trigger activation of "VR Presentation Mode", where the page can begin sending imagery to the device. Testing to see if the device supports the capabilities the page needs is done via the `supportsSession` call, which takes a dictionary of the desired functionality and returns whether or not the device can create a session supporting them. Querying for support this way is necessary because it allows the application to detect what VR features are available without actually engaging the sensors or beginning presentation, which can incur significant power or performance overhead on some systems and may have side effects such as launching a VR status tray or storefront.
 
 In this case, we only ask if the ability to have `exclusive` access (Which includes the ability to display imagery on the headset). Note that `exclusive: true` is actually the dictionary default, and so does not need to be specified here. It’s made explicit in this example for clarity.
 
@@ -101,15 +101,13 @@ async function OnVRAvailable() {
 
 Clicking that button will attempt to initiate a [`VRSession`](https://w3c.github.io/webvr/#interface-vrsession), which manages input and output for the display. When creating a session with `VRDevice.requestSession` the capabilities that the returned session must have are passed in via a dictionary, exactly like the `supportsSession` call. If `supportsSession` returned true for a given dictionary then calling `requestSession` with the same dictionary values should be reasonably expected to succeed, barring external factors (such as `requestSession` not being called in a user gesture for an exclusive session or another page currently having an exclusive session for the same device.)
 
-The page may also want to create a session that doesn't need exclusive access to the device for tracking purposes. Since the `VRSession` is also what provides access to the device's position and orientation data requesting a non-exclusive session enables what's referred to as "Magic Window" use cases, where the scene is rendered on the page normally but is responsive to device movement. This is especially useful for mobile devices, where moving the device can be used to look around a scene. Devices with Tango tracking capabilities may also expose 6DoF tracking this way, even when the device itself is not capable of stereo presentation.
-
 Requesting a new type of session will end any previously active ones.
 
 ```js
-function BeginVRSession(isExclusive) {
+function BeginVRSession() {
   // VRDevice.requestSession must be called within a user gesture event
   // like click or touch when requesting exclusive access.
-  vrDevice.requestSession({ exclusive: isExclusive })
+  vrDevice.requestSession()
       .then(OnSessionStarted)
       .catch(err => {
         // May fail for a variety of reasons, including another page already
@@ -181,9 +179,7 @@ function OnDrawVRFrame(vrFrame) {
   if (pose) {
     gl.bindFramebuffer(vrLayer.framebuffer);
 
-    // Draw each view of the scene to the prescribed viewport. Typically if we
-    // have exclusive access to the device this will draw in stereo, otherwise
-    // it will usually draw in mono.
+    // Draw each view of the scene to the prescribed viewport.
     for (let view of vrFrame.views) {
       let viewport = vrLayer.getViewport(view);
       gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
@@ -395,6 +391,55 @@ navigator.vr.addEventListener('navigate', vrDeviceEvent => {
 });
 ```
 
+### Non-exclusive tracking
+
+In some cases you may want to gather tracking data from the headset with no presentation component. In that case a "tracking only" session can be created by requesting a non-exclusive session. This will create a session that still produces `VRFrame` and `VRDevicePose` data like normal, but doesn't display anything on the headset or page. When in this mode the `views` array on the `VRFrame` will be empty and no `VRLayers` can be created for the session. Non-exclusive sessions also don't prevent other pages from also tracking the headset at the same time. If an exclusive session is created on any page all non-exclusive sessions will be suspended for the duration of the exclusive session.
+
+```js
+vrDevice.requestSession({ exclusive: false }).then(session => {
+  // Store the session for use later.
+  vrSession = session;
+
+  // No setup required for rendering.
+
+  // Start the render loop
+  vrSession.requestVRFrame().then(OnTrackingFrame);
+});
+
+function OnTrackingFrame(vrFrame) {
+  // Use the vrFrame to get pose data for logging, recording, etc.
+  // You can render something using the pose data if you'd like, but nothing
+  // will show up on the headset.
+
+  vrSession.requestVRFrame().then(OnTrackingFrame);
+};
+```
+
+### Mirroring
+
+With hardware that has a external display in addition to the VRDevice's display, such as HMDs connected to a desktop PC, it's frequently desirable to mirror the content being displayed on the headset to the external monitor so that others in the room can get a sense of what the user in the headset is seeing. WebVR enables mirroring by specifying an `outputCanvas` in the session creation parameters when requesting an exclusive session. The canvas used for mirroring must have a `ImageBitmapRenderingContext`.
+
+```js
+let mirrorCanvas = document.createElement('canvas');
+document.body.appendChild(mirrorCanvas);
+let imgContext = mirrorCanvas.getContext('bitmaprenderer');
+
+vrDevice.requestSession({ outputCanvas: mirrorCanvas }).then(OnSessionStarted);
+```
+
+The mirrored output will show imagery for a single eye and may be cropped to look more natural on the screen, presented at a lower resolution for performance, or lag slightly behind the imagery in the headset.
+
+### Magic Window
+
+A common use case for mobile devices that double as VR hardware (ie: Daydream, GearVR) is what's referred to as "Magic Window" use cases, where the scene is rendered on the page normally but is responsive to device movement, giving the impression that the device is a moveable window in to the scene it's viewing. Devices with Tango tracking capabilities may also expose 6DoF tracking this way, even when the device itself is not capable of stereo presentation. This type of content can be enabled with a WebVR device by creating a non-exclusive session and providing an `outputCanvas` that the scene will be displayed on.
+
+```js
+vrDevice.requestSession({ exclusive: false, outputCanvas: mirrorCanvas })
+    .then(OnSessionStarted);
+```
+
+Unlike normal non-exclusive mode, this mode will still allow the use of `VRLayer`s and will report a single `VRView` on the `VRFrame` so that the same rendering loop used for normal VR content can also be used here. The projection matrix for the `VRView` will use the `outputCanvas` aspect ratio as part of it's computation so that the image doe not look skewed on screen.
+
 ## Appendix A: I don’t understand why this is a new API. Why can’t we use…
 
 ### `DeviceOrientation` Events
@@ -466,10 +511,12 @@ interface VRDevice : EventTarget {
 
 dictionary VRSessionCreateParametersInit {
   boolean exclusive = true;
+  HTMLCanvasElement outputCanvas = null;
 };
 
 interface VRSessionCreateParameters {
   readonly boolean exclusive;
+  readonly HTMLCanvasElement outputCanvas = null;
 };
 
 interface VRSession : EventTarget {
@@ -523,9 +570,6 @@ interface VRDevicePose {
 
 interface VRLayer {};
 
-typedef (HTMLCanvasElement or
-         OffscreenCanvas) VRCanvasSource;
-
 dictionary VRWebGLLayerInit {
   double framebufferScaleFactor = 0.0;
 
@@ -543,12 +587,12 @@ interface VRWebGLViewport {
 };
 
 [Constructor(VRSession session,
-             VRCanvasSource source,
+             WebGLRenderingContextBase context,
              optional VRWebGLLayerInit layerInitDict)]
 interface VRWebGLLayer : VRLayer {
   VRWebGLViewport getViewport(VRView view);
 
-  readonly attribute VRCanvasSource source;
+  readonly attribute WebGLRenderingContextBase context;
 
   readonly attribute WebGLFramebuffer framebuffer;
   readonly attribute double framebufferScaleFactor;
